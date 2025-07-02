@@ -1,3 +1,5 @@
+print("🤖 Bot started. Checking WOKO every minute...")
+
 import os
 import time
 import requests
@@ -57,4 +59,6 @@ while True:
     new_rooms = get_free_rooms()
     for msg in new_rooms:
         send_telegram_message(msg)
+    print("✅ Tick... checking again")
     time.sleep(60)
+
