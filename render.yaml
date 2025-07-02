@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: woko-telegram-bot
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python3 bot.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
