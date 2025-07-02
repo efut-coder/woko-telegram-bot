@@ -5,6 +5,9 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from keep_alive import keep_alive
+
+keep_alive()
 
 # Set your Telegram token and chat ID from environment
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
