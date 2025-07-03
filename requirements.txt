@@ -1,6 +1,6 @@
 flask==3.1.1
 requests==2.32.4
 beautifulsoup4==4.13.4
-selenium==4.34.0         # for headless Chrome
-gunicorn==23.0.0          # Render runs this for production
-webdriver-manager==4.5.1  # pulls the right ChromeDriver
+selenium==4.34.0
+gunicorn==23.0.0
+webdriver-manager==4.0.2   # ≤ 4.0.2 is the newest on PyPI
