@@ -1,91 +1,90 @@
-import os, time, threading, requests, re
-from flask import Flask
+import os, time, threading, requests
 from bs4 import BeautifulSoup
+from flask import Flask
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
-# ───────────────── Telegram ───────────────────────────────────
+# ─── Telegram ──────────────────────────────────────────────────────────────
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = "194010292"
-def tg(msg: str):
+def send(text: str):
     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                  data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
                   timeout=8)
 
-# ───────────────── Pages to watch ─────────────────────────────
+# ─── Pages ─────────────────────────────────────────────────────────────────
 PAGES = {
-    "Zürich"                : "https://www.woko.ch/de/zimmer-in-zuerich",
-    "Winterthur + Wädenswil": "https://www.woko.ch/de/zimmer-in-winterthur-und-waedenswil",
-    "Wädenswil"             : "https://www.woko.ch/de/zimmer-in-waedenswil",
+    "Zürich"                : "https://www.woko.ch/en/zimmer-in-zuerich",
+    "Winterthur + Wädenswil": "https://www.woko.ch/en/zimmer-in-winterthur-und-waedenswil",
+    "Wädenswil"             : "https://www.woko.ch/en/zimmer-in-waedenswil",
 }
 
-sent : set[str] = set()
+sent: set[str] = set()
 
-UA = {
-    "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/126.0.0.0 Safari/537.36",
-    "Accept-Language": "de,en;q=0.9"
-}
+# ─── Selenium helper ───────────────────────────────────────────────────────
+def new_driver() -> webdriver.Chrome:
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    return webdriver.Chrome(ChromeDriverManager().install(), options=opts)
 
-SELECTORS = [
-    "div.row.offer",        # original
-    "div.offer",            # alternative
-    "div.offer-teaser",     # found on some pages
-    "div.grid-item",        # front-page grid boxes
-]
-
-def find_boxes(soup: BeautifulSoup):
-    """Try several selectors, return first non-empty list (or [])."""
-    for sel in SELECTORS:
-        boxes = soup.select(sel)
-        if boxes:
-            return boxes, sel
-    return [], None
-
-# ───────────────── scrape & notify once ───────────────────────
 def scrape_once():
-    for city, url in PAGES.items():
-        try:
-            print(f"GET {city} …")
-            r = requests.get(url, headers=UA, timeout=10)
-            r.raise_for_status()
+    driver = new_driver()
+    try:
+        for city, url in PAGES.items():
+            print(f"· {city}: loading page")
+            driver.get(url)
 
-            soup   = BeautifulSoup(r.text, "html.parser")
-            boxes, sel = find_boxes(soup)
+            # click the “Free rooms” button if it exists
+            try:
+                btn = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+                                    " 'abcdefghijklmnopqrstuvwxyz'), 'free rooms')]"))
+                )
+                btn.click()
+                print(f"  clicked Free rooms for {city}")
+            except Exception:
+                print(f"  no Free rooms button on {city}")
 
-            if not boxes:
-                # Fallback: any <a> with "/zimmer-" in href
-                links = [a for a in soup.find_all("a", href=True)
-                         if "/zimmer-" in a["href"]][:10]
-                if links:
-                    boxes = links    # treat anchors as 'boxes'
-                    sel   = "<a/href>"
-            print(f"▶ {city}: {len(boxes)} boxes (selector: {sel})")
-
-            if not boxes:
-                tg(f"DBG: Kein Treffer in {city}. Selector = {sel or 'NONE'}")
+            # wait until at least one listing box is in the DOM
+            try:
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.row.offer"))
+                )
+            except Exception:
+                send(f"⚠️ Kein Inserat gefunden ({city})")  # still nothing
                 continue
 
-            first   = boxes[0]
-            # If we fell back to anchors, first IS an <a>
-            a_tag   = first if first.name == "a" else first.find("a", href=True)
-            title   = (first.get_text(" ", strip=True)[:120]
-                       if first else "Kein Titel")
-            link    = ("https://www.woko.ch" + a_tag["href"]
-                       if a_tag and a_tag["href"].startswith("/")
-                       else (a_tag["href"] if a_tag else url))
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            first = soup.select_one("div.row.offer")
+            if not first:
+                send(f"⚠️ Kein Inserat gefunden ({city})")
+                continue
+
+            a  = first.find("a", href=True)
+            h3 = first.find("h3")
+
+            link  = "https://www.woko.ch" + a["href"] if a and a["href"].startswith("/") else (a["href"] if a else url)
+            title = h3.get_text(" ", strip=True) if h3 else "No title"
 
             if link in sent:
+                print(f"  already sent {link}")
                 continue
+
             sent.add(link)
+            send(f"🏠 <b>{title}</b>\n🔗 {link}\n📍 {city}")
+            print(f"  sent: {title}")
 
-            tg(f"🏠 <b>{title}</b>\n🔗 {link}\n📍 {city}")
+    finally:
+        driver.quit()
 
-        except Exception as e:
-            print("ERR:", city, e)
-            tg(f"❌ {city}: {e}")
-
-# ───────────────── background loop & Flask ────────────────────
+# ─── Loop + Flask keep-alive (Render) ──────────────────────────────────────
 def loop():
     n = 0
     while True:
@@ -99,5 +98,5 @@ def root(): return "✅ WOKO bot is running"
 
 if __name__ == "__main__":
     threading.Thread(target=loop, daemon=True).start()
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, threaded=False)
