@@ -25,7 +25,7 @@ def run():
 def keep_alive():
     Thread(target=run).start()
 
-# ✅ Function to send message to Telegram
+# ✅ Send a Telegram message
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -33,38 +33,40 @@ def send_telegram_message(message):
         "text": message,
         "parse_mode": "HTML"
     }
-    requests.post(url, data=payload)
+    response = requests.post(url, data=payload)
+    print("📨 Telegram response:", response.text)
 
-# ✅ Function to check WOKO homepage for listings
+# ✅ Main check function
 def check_woko():
     print("🔁 Checking WOKO homepage...")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
         driver.get("https://www.woko.ch")
         time.sleep(3)
 
-        # Accept cookies if popup appears
+        # Accept cookies if shown
         try:
             accept_btn = driver.find_element(By.XPATH, '//button[contains(text(), "Accept all")]')
             accept_btn.click()
             print("🍪 Cookies accepted")
             time.sleep(2)
         except:
-            print("🍪 No cookie banner")
+            print("🍪 No cookie popup found")
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # Find both left (Nachmieter) and right (Untermieter) boxes
-        listings = soup.select("div.grid-item")  # Each box
+        # ✅ FIXED: Correct selector based on real listings
+        listings = soup.select("div.angebot.teaser")
 
-        latest_listing = None
-        latest_date = None
+        if not listings:
+            print("⚠️ No listings found")
+            send_telegram_message("⚠️ No listings found on WOKO.")
+            return
 
         for box in listings:
             title = box.find("h3")
@@ -79,10 +81,9 @@ def check_woko():
             if rent:
                 msg += f"\n💰 {rent.get_text(strip=True)} CHF"
 
-            # Just send the FIRST valid one for now
             send_telegram_message(msg)
             print("✅ Sent latest listing")
-            break  # Only one listing for test
+            break  # only send the first one for now
 
         driver.quit()
 
@@ -91,9 +92,9 @@ def check_woko():
         send_telegram_message(f"❌ Bot error: {e}")
         driver.quit()
 
-# ✅ Start everything
+# ✅ Start bot
 keep_alive()
-print("🤖 Bot is running. Checking WOKO every 60 seconds...")
+print("🤖 Bot running. Checking WOKO every 60 seconds...")
 
 while True:
     check_woko()
