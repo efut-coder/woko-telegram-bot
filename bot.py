@@ -1,74 +1,99 @@
 import os
 import time
 import requests
+from flask import Flask
+from threading import Thread
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+# ✅ Telegram bot credentials
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-def send_telegram_message(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
-    )
+# ✅ Flask app to keep Render alive
+app = Flask('')
 
+@app.route('/')
+def home():
+    return "✅ WOKO Bot is running"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    Thread(target=run).start()
+
+# ✅ Send Telegram message
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    requests.post(url, data=payload)
+
+# ✅ Check WOKO homepage
 def check_woko():
-    print("🔁 tick: открываю страницу и проверяю объявления…")
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=opts)
+    print("🔁 Checking WOKO homepage...")
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+
+    driver = webdriver.Chrome(options=chrome_options)
+
     try:
         driver.get("https://www.woko.ch")
-        time.sleep(3)
+        time.sleep(2)
+
+        # Accept cookies
         try:
-            btn = driver.find_element(By.XPATH, "//button[contains(text(),'Accept all')]")
-            btn.click()
-            print("🍪 cookies приняты")
+            accept = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Accept all")]'))
+            )
+            accept.click()
+            print("🍪 Cookies accepted")
             time.sleep(1)
-        except Exception:
-            print("🍪 popup с cookies не найден")
+        except:
+            print("🍪 No cookie banner")
 
-        html = driver.page_source
-        print("=== page source начало ===")
-        print(html[:5000])
-        print("=== page source конец ===")
+        # Wait for listings to appear
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.room-item"))
+        )
 
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
+        listings = driver.find_elements(By.CSS_SELECTOR, "div.room-item")
 
-        # Выводим все подходящие блоки для отладки
-        boxes = soup.select("div.grid-item")
-        print(f"Найдено блоков div.grid-item: {len(boxes)}")
-        for i, box in enumerate(boxes[:5]):
-            print(f"Блок {i}:\n", box.prettify()[:500])
+        if not listings:
+            print("⚠️ No listings found on WOKO.")
+            send_telegram_message("⚠️ No listings found on WOKO.")
+            return
 
-        # Пробуем найти первое валидное объявление
-        for box in boxes:
-            title = box.find("h3")
-            date = box.find(lambda tag: tag.name == "p" and tag.get_text(strip=True)[0].isdigit())
-            addr = box.find("div", class_="address")
-            price = box.find("div", class_="price")
-            if title and date and addr:
-                msg = f"<b>{title.get_text(strip=True)}</b>\n🗓 {date.get_text(strip=True)}\n🏠 {addr.get_text(strip=True)}"
-                if price:
-                    msg += f"\n💰 {price.get_text(strip=True)}"
-                print("➡️ отправляю в Telegram:", msg)
-                send_telegram_message(msg)
-                break
-        else:
-            send_telegram_message("⚠️ No listings found on WOKO")
-            print("‼️ Нет ни одного валидного объявления")
+        # Get first (most recent) listing
+        latest = listings[0]
+        title = latest.find_element(By.TAG_NAME, "h3").text.strip()
+        link = latest.find_element(By.TAG_NAME, "a").get_attribute("href")
+        date = latest.find_element(By.CSS_SELECTOR, ".date").text.strip()
+
+        message = f"<b>{title}</b>\n🗓 {date}\n<a href=\"{link}\">Open listing</a>"
+        send_telegram_message(message)
+        print("✅ Sent latest listing to Telegram")
 
     except Exception as e:
-        send_telegram_message(f"❌ ERROR: {e}")
-        print("Ошибка:", e)
+        print("❌ Error:", e)
+        send_telegram_message(f"❌ Bot error: {e}")
     finally:
         driver.quit()
 
-if __name__ == "__main__":
-    # для быстрой проверки один раз
+# ✅ Start bot
+keep_alive()
+print("🤖 Bot running...")
+
+while True:
     check_woko()
+    time.sleep(60)
