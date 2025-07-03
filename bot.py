@@ -54,10 +54,10 @@ def get_all_rooms_from_homepage():
             full_link = "https://www.woko.ch" + link_tag['href']
             title = title_tag.get_text(strip=True)
 
-            if full_link not in sent_links:
-                sent_links.add(full_link)
-                formatted = f"<b>{title}</b>\n<a href='{full_link}'>Open listing</a>"
-                new_announcements.append(formatted)
+            # Always send the first listing for testing
+formatted = f"<b>{title}</b>\n<a href='{full_link}'>Open listing</a>"
+new_announcements.append(formatted)
+break  # отправим только одно последнее
 
         return new_announcements
 
