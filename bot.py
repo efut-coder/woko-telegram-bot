@@ -8,87 +8,93 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-# ✅ Telegram credentials
+# ✅ Environment variables for your Telegram bot
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# ✅ Flask server to keep bot alive
+# ✅ Flask app to keep alive on Render
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "WOKO bot is running."
+    return "✅ WOKO Bot is running"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
-    t = Thread(target=run)
-    t.start()
+    Thread(target=run).start()
 
-# ✅ Send Telegram message
+# ✅ Function to send message to Telegram
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
     requests.post(url, data=payload)
 
-# ✅ Check WOKO site (no Free rooms click)
+# ✅ Function to check WOKO homepage for listings
 def check_woko():
-    print("🔁 Checking WOKO...")
-
+    print("🔁 Checking WOKO homepage...")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        driver.get("https://www.woko.ch/en/zimmer-in-zuerich")
+        driver.get("https://www.woko.ch")
         time.sleep(3)
 
-        # Accept cookies if shown
+        # Accept cookies if popup appears
         try:
-            accept_button = driver.find_element(By.ID, "cookie-notice-accept")
-            accept_button.click()
+            accept_btn = driver.find_element(By.XPATH, '//button[contains(text(), "Accept all")]')
+            accept_btn.click()
             print("🍪 Cookies accepted")
-            time.sleep(1)
+            time.sleep(2)
         except:
-            print("🍪 No cookies popup")
+            print("🍪 No cookie banner")
 
-        # Parse current page without clicking anything
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        listings = soup.select("div.content-container div.row.offer")
 
-        if not listings:
-            send_telegram_message("❌ No listings found on WOKO.")
-            print("⚠️ No listings found")
-            return
+        # Find both left (Nachmieter) and right (Untermieter) boxes
+        listings = soup.select("div.grid-item")  # Each box
 
-        # Send latest (first) listing
-        latest = listings[0]
-        link_tag = latest.find("a", href=True)
-        title_tag = latest.find("h3")
+        latest_listing = None
+        latest_date = None
 
-        if link_tag and title_tag:
-            full_link = "https://www.woko.ch" + link_tag['href']
-            title = title_tag.get_text(strip=True)
-            message = f"<b>{title}</b>\n<a href=\"{full_link}\">Open listing</a>"
-            send_telegram_message(message)
-            print("✅ Sent latest listing to Telegram")
-        else:
-            send_telegram_message("⚠️ Couldn't extract latest listing.")
-            print("❌ Missing data in latest listing")
+        for box in listings:
+            title = box.find("h3")
+            date = box.find("p", class_="date")
+            address = box.find("div", class_="address")
+            rent = box.find("div", class_="price")
+
+            if not (title and date and address):
+                continue
+
+            msg = f"<b>{title.get_text(strip=True)}</b>\n🗓 {date.get_text(strip=True)}\n🏠 {address.get_text(strip=True)}"
+            if rent:
+                msg += f"\n💰 {rent.get_text(strip=True)} CHF"
+
+            # Just send the FIRST valid one for now
+            send_telegram_message(msg)
+            print("✅ Sent latest listing")
+            break  # Only one listing for test
+
+        driver.quit()
 
     except Exception as e:
         print("❌ Error:", e)
-        send_telegram_message(f"Error: {str(e)}")
-
-    finally:
+        send_telegram_message(f"❌ Bot error: {e}")
         driver.quit()
 
-# ✅ Start the bot
+# ✅ Start everything
 keep_alive()
-print("🤖 Bot started (no Free rooms click)")
+print("🤖 Bot is running. Checking WOKO every 60 seconds...")
 
-# Only run once for testing
-check_woko()
+while True:
+    check_woko()
+    time.sleep(60)
