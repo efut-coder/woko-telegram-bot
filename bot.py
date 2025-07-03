@@ -29,8 +29,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ──────────────────────────────────────────────────────────────
 # 1.  Telegram helpers
 # ──────────────────────────────────────────────────────────────
-TOKEN  = os.getenv("TELEGRAM_TOKEN",  "")
-CHATID = os.getenv("TELEGRAM_CHAT_ID", "")
+TOKEN  = os.getenv("TELEGRAM_TOKEN",  "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8")
+CHATID = os.getenv("TELEGRAM_CHAT_ID", "194010292")
 
 def tg_send(text: str) -> None:
     if not (TOKEN and CHATID):
