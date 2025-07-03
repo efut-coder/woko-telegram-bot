@@ -1,75 +1,72 @@
-# bot.py
-import os, time, logging
-import requests
-from flask import Flask
+# bot.py  —  минимальный “URL-watcher” без дублей
+import os, time, logging, requests
 from threading import Thread
+from flask import Flask
 
-##############################################################################
-# 1. НАСТРОЙКИ — ЗАМЕНИТЕ, ЕСЛИ НУЖНО
-##############################################################################
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292
 
-# стартовые (уже существующие) номера объявлений
-START_NACHMIETER = 10198
-START_UNTERMIETER = 10189
+START_NACHMIETER   = 10198      # последние актуальные id на момент запуска
+START_UNTERMIETER  = 10189
+CHECK_EVERY_SEC    = 60         # частота проверки
 
-CHECK_EVERY_SEC = 60  # частота проверки
+NACH_FMT   = "https://www.woko.ch/en/nachmieter-details/{}"
+UNTER_FMT  = "https://www.woko.ch/en/untermieter-details/{}"
 
-##############################################################################
-# 2. ВСПОМОГАТЕЛЬНЫЕ ШТУКИ
-##############################################################################
-NACH_FMT = "https://www.woko.ch/en/nachmieter-details/{}"
-UNTER_FMT = "https://www.woko.ch/en/untermieter-details/{}"
-
-def tg_send(text: str) -> None:
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": text})
+# ----------------------- helpers -----------------------
+def tg_send(url: str) -> None:
+    if url in SENT:                         # уже отправляли → пропускаем
+        return
+    r = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                      json={"chat_id": CHAT_ID, "text": url})
+    if r.ok:
+        SENT.add(url)
+    else:
+        logging.warning("Telegram error %s → %s", r.status_code, r.text)
 
 def url_exists(url: str) -> bool:
-    # HEAD хватит, страница отдаёт 404, если не существует
-    resp = requests.head(url, allow_redirects=True, timeout=10)
-    return resp.status_code == 200
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        return r.status_code == 200
+    except requests.RequestException as e:
+        logging.warning("HEAD %s failed: %s", url, e)
+        return False
 
-##############################################################################
-# 3. ОСНОВНОЙ ЦИКЛ
-##############################################################################
+# ----------------------- main loop ---------------------
 def loop() -> None:
-    nach_id   = START_NACHMIETER
-    unter_id  = START_UNTERMIETER
+    nach_id  = START_NACHMIETER
+    unter_id = START_UNTERMIETER
 
-    # отправляем стартовые ссылки
+    # стартовые ссылки
     tg_send(NACH_FMT.format(nach_id))
     tg_send(UNTER_FMT.format(unter_id))
 
     while True:
         time.sleep(CHECK_EVERY_SEC)
 
-        # проверяем следующее nachmieter-объявление
-        if url_exists(NACH_FMT.format(nach_id + 1)):
-            nach_id += 1
+        nxt = nach_id + 1
+        if url_exists(NACH_FMT.format(nxt)):
+            nach_id = nxt
             tg_send(NACH_FMT.format(nach_id))
 
-        # проверяем следующее untermieter-объявление
-        if url_exists(UNTER_FMT.format(unter_id + 1)):
-            unter_id += 1
+        nxt = unter_id + 1
+        if url_exists(UNTER_FMT.format(nxt)):
+            unter_id = nxt
             tg_send(UNTER_FMT.format(unter_id))
 
-##############################################################################
-# 4. FLASK, ЧТОБЫ RENDER НЕ РУГАЛСЯ
-##############################################################################
+# ----------------------- flask stub --------------------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "WOKO watcher running"
 
+# ----------------------- entrypoint --------------------
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    SENT = set()                                # <— здесь храним уже высланные URL
     logging.info("Starting watcher…")
 
-    # фоновая нить с циклом
-    Thread(target=loop, daemon=True).start()
-
-    # Render слушает порт 10000/0.0.0.0
+    Thread(target=loop, daemon=True).start()    # фоновая проверка
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
