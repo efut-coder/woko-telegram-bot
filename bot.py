@@ -8,11 +8,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-# ✅ Environment variables for your Telegram bot
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# ✅ Flask app to keep alive on Render
 app = Flask('')
 
 @app.route('/')
@@ -25,7 +23,6 @@ def run():
 def keep_alive():
     Thread(target=run).start()
 
-# ✅ Send a Telegram message
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -36,7 +33,6 @@ def send_telegram_message(message):
     response = requests.post(url, data=payload)
     print("📨 Telegram response:", response.text)
 
-# ✅ Main check function
 def check_woko():
     print("🔁 Checking WOKO homepage...")
     chrome_options = Options()
@@ -49,30 +45,35 @@ def check_woko():
         driver.get("https://www.woko.ch")
         time.sleep(3)
 
-        # Accept cookies if shown
+        # Accept cookies
         try:
             accept_btn = driver.find_element(By.XPATH, '//button[contains(text(), "Accept all")]')
             accept_btn.click()
             print("🍪 Cookies accepted")
             time.sleep(2)
         except:
-            print("🍪 No cookie popup found")
+            print("🍪 No cookie popup")
 
-        soup = BeautifulSoup(driver.page_source, "html.parser")
+        # 🧠 Parse the page
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
 
-        # ✅ FIXED: Correct selector based on real listings
+        # ✅ Correct selector
         listings = soup.select("div.angebot.teaser")
+        print(f"🔍 Found {len(listings)} listings")
 
         if not listings:
-            print("⚠️ No listings found")
             send_telegram_message("⚠️ No listings found on WOKO.")
             return
 
+        # Take the first listing for test
         for box in listings:
             title = box.find("h3")
             date = box.find("p", class_="date")
             address = box.find("div", class_="address")
             rent = box.find("div", class_="price")
+
+            print("🧾 Listing found:", title, date, address)
 
             if not (title and date and address):
                 continue
@@ -82,19 +83,17 @@ def check_woko():
                 msg += f"\n💰 {rent.get_text(strip=True)} CHF"
 
             send_telegram_message(msg)
-            print("✅ Sent latest listing")
-            break  # only send the first one for now
-
-        driver.quit()
+            print("✅ Sent 1st listing")
+            break
 
     except Exception as e:
         print("❌ Error:", e)
         send_telegram_message(f"❌ Bot error: {e}")
+    finally:
         driver.quit()
 
-# ✅ Start bot
 keep_alive()
-print("🤖 Bot running. Checking WOKO every 60 seconds...")
+print("🤖 Bot is running. Checking WOKO every 60 seconds...")
 
 while True:
     check_woko()
