@@ -3,4 +3,3 @@ requests==2.32.4
 beautifulsoup4==4.13.4
 selenium==4.34.0
 gunicorn==23.0.0
-python-telegram-bot==20.7      # ← NEW
