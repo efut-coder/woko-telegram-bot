@@ -1,20 +1,18 @@
 import os
 import time
-import threading
 import requests
+import threading
 from flask import Flask
-from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from bs4 import BeautifulSoup
 
-# === CONFIG ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID")
+# === ENV VARIABLES ===
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-# === FLASK APP to keep alive ===
+# === FLASK KEEP-ALIVE ===
 app = Flask(__name__)
 
 @app.route('/')
@@ -24,85 +22,82 @@ def home():
 def run_flask():
     app.run(host='0.0.0.0', port=8080)
 
-# === SEND TELEGRAM MESSAGE ===
-def send_telegram_message(text):
+# === TELEGRAM MESSAGE ===
+def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
     try:
-        response = requests.post(url, data=payload)
-        if response.status_code != 200:
-            print(f"❌ Telegram error: {response.text}")
+        requests.post(url, data=payload)
     except Exception as e:
-        print(f"❌ Telegram exception: {e}")
+        print(f"❌ Telegram error: {e}")
 
-# === CHECK ONE WOKO PAGE ===
-def check_woko_page(driver, url, label):
-    try:
-        driver.get(url)
-        print(f"🌍 Opened {label} page")
-
-        # Accept cookie banner
-        try:
-            accept_btn = WebDriverWait(driver, 3).until(
-                EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Alle akzeptieren")]'))
-            )
-            accept_btn.click()
-            print("🍪 Cookies accepted")
-        except:
-            print("🍪 No cookie popup")
-
-        # Wait for listings
-        WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "item"))
-        )
-
-        listings = driver.find_elements(By.CLASS_NAME, "item")
-        if not listings:
-            send_telegram_message(f"⚠️ No listings found on WOKO for {label}.")
-            return
-
-        first = listings[0]
-        title = first.find_element(By.CLASS_NAME, "title").text
-        address = first.find_element(By.CLASS_NAME, "address").text
-        rent = first.find_element(By.CLASS_NAME, "price").text if first.find_elements(By.CLASS_NAME, "price") else "N/A"
-
-        msg = f"<b>{label}</b>\n🏠 {title}\n📍 {address}\n💰 {rent}\n🔗 <a href='{url}'>See all listings</a>"
-        send_telegram_message(msg)
-        print(f"✅ Sent listing for {label}")
-
-    except Exception as e:
-        print(f"❌ Error on {label}: {e}")
-        send_telegram_message(f"❌ Error while checking {label}: {e}")
-
-# === CHECK ALL PAGES ===
-def check_all_woko_pages():
+# === WOKO PARSER ===
+def check_woko(url, city_label):
+    print(f"🔁 Checking {city_label}...")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=chrome_options)
 
-    pages = [
+    driver = webdriver.Chrome(options=chrome_options)
+    try:
+        driver.get(url)
+        time.sleep(3)
+
+        try:
+            cookie_btn = driver.find_element(By.XPATH, '//button[contains(text(), "Accept all")]')
+            cookie_btn.click()
+            time.sleep(1)
+            print("🍪 Cookies accepted")
+        except:
+            print("🍪 No cookie banner")
+
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        listings = soup.select(".listing")
+
+        if not listings:
+            send_telegram_message(f"⚠️ No listings found on WOKO for {city_label}.")
+            print(f"⚠️ No listings found on WOKO for {city_label}.")
+            return
+
+        for item in listings:
+            title = item.select_one("h3")
+            date = item.select_one(".date")
+            address = item.select_one(".address")
+            price = item.select_one(".price")
+
+            if title and date and address:
+                msg = f"<b>{title.text.strip()}</b>\n🗓 {date.text.strip()}\n🏠 {address.text.strip()}"
+                if price:
+                    msg += f"\n💰 {price.text.strip()}"
+                send_telegram_message(msg)
+                print("✅ Sent a listing")
+                break  # send only one for now
+
+    except Exception as e:
+        print("❌ Error in scraping:", e)
+        send_telegram_message(f"❌ Bot error: {e}")
+    finally:
+        driver.quit()
+
+# === MAIN LOOP ===
+def bot_loop():
+    urls = [
         ("https://www.woko.ch/de/zimmer-in-zuerich", "Zürich"),
         ("https://www.woko.ch/de/zimmer-in-winterthur-und-waedenswil", "Winterthur & Wädenswil"),
         ("https://www.woko.ch/de/zimmer-in-waedenswil", "Wädenswil")
     ]
-
-    for url, label in pages:
-        check_woko_page(driver, url, label)
-        time.sleep(2)
-
-    driver.quit()
-
-# === MAIN BOT LOOP ===
-def bot_loop():
     while True:
-        print("🔁 Checking WOKO pages...")
-        check_all_woko_pages()
-        time.sleep(60)
+        for url, label in urls:
+            check_woko(url, label)
+        time.sleep(60)  # every 1 minute
 
-# === START EVERYTHING ===
-if __name__ == "__main__":
+# === START ===
+if __name__ == '__main__':
     print("🤖 Bot running...")
-    threading.Thread(target=run_flask).start()  # keeps the app alive on Render
+    threading.Thread(target=run_flask).start()
     bot_loop()
