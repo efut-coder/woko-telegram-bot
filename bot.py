@@ -3,17 +3,16 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
-# ✅ Telegram credentials
+# ✅ Environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# ✅ Keep-alive Flask app
+# ✅ Flask app to keep bot alive
 app = Flask('')
 
 @app.route('/')
@@ -26,73 +25,79 @@ def run():
 def keep_alive():
     Thread(target=run).start()
 
-# ✅ Send Telegram
+# ✅ Telegram sender
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
     requests.post(url, data=payload)
 
-# ✅ Screenshot helper
-def take_screenshot(driver, name="screenshot.png"):
-    driver.save_screenshot(name)
-    print(f"📸 Screenshot saved as {name}")
-
-# ✅ Main checker
+# ✅ WOKO listing checker for multiple URLs
 def check_woko():
-    print("🔁 Checking WOKO homepage...")
+    print("🔁 Checking WOKO pages...")
+    urls = [
+        ("Zürich", "https://www.woko.ch/de/zimmer-in-zuerich"),
+        ("Winterthur & Wädenswil", "https://www.woko.ch/de/zimmer-in-winterthur-und-waedenswil"),
+        ("Wädenswil", "https://www.woko.ch/de/zimmer-in-waedenswil")
+    ]
+
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    
+
     driver = webdriver.Chrome(options=chrome_options)
 
-    try:
-        driver.get("https://www.woko.ch")
-        time.sleep(2)
-
-        # Accept cookies
+    for region, url in urls:
         try:
-            accept = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, '//button[contains(text(), "Accept all")]'))
-            )
-            accept.click()
-            print("🍪 Cookies accepted")
-            time.sleep(1)
-        except:
-            print("🍪 No cookie banner")
+            driver.get(url)
+            time.sleep(3)
 
-        # Wait for room-item
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.room-item"))
-        )
+            # Accept cookies if shown
+            try:
+                accept_btn = driver.find_element(By.XPATH, '//button[contains(text(), "Alle akzeptieren")]')
+                accept_btn.click()
+                print("🍪 Cookies accepted")
+                time.sleep(2)
+            except:
+                print("🍪 No cookie banner")
 
-        listings = driver.find_elements(By.CSS_SELECTOR, "div.room-item")
-        print(f"🔎 Found {len(listings)} listings")
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            listings = soup.select("div.view-content > div")
 
-        # Take a screenshot to debug
-        take_screenshot(driver)
+            print(f"🔍 {region}: Found {len(listings)} listings")
 
-        if not listings:
-            print("⚠️ No listings found on WOKO.")
-            send_telegram_message("⚠️ No listings found on WOKO.")
-            return
+            if listings:
+                first = listings[0]
+                title = first.find("div", class_="views-field-title")
+                location = first.find("div", class_="views-field-field-adress")
+                rent = first.find("div", class_="views-field-field-miete")
+                date = first.find("span", class_="date-display-single")
 
-        latest = listings[0]
-        title = latest.find_element(By.TAG_NAME, "h3").text.strip()
-        link = latest.find_element(By.TAG_NAME, "a").get_attribute("href")
-        date = latest.find_element(By.CSS_SELECTOR, ".date").text.strip()
+                message = f"<b>🏠 New Room Listing ({region})</b>\n"
+                if title:
+                    message += f"\n<b>{title.get_text(strip=True)}</b>"
+                if location:
+                    message += f"\n📍 {location.get_text(strip=True)}"
+                if rent:
+                    message += f"\n💰 {rent.get_text(strip=True)}"
+                if date:
+                    message += f"\n🗓 {date.get_text(strip=True)}"
+                message += f"\n🔗 <a href=\"{url}\">View Listings</a>"
 
-        message = f"<b>{title}</b>\n🗓 {date}\n<a href=\"{link}\">Open listing</a>"
-        send_telegram_message(message)
-        print("✅ Sent latest listing")
+                send_telegram_message(message)
+                print(f"✅ Sent 1st listing for {region}")
+            else:
+                send_telegram_message(f"⚠️ No listings found on WOKO for {region}.")
 
-    except Exception as e:
-        print("❌ Error:", e)
-        send_telegram_message(f"❌ Bot error: {e}")
-    finally:
-        driver.quit()
+        except Exception as e:
+            print(f"❌ Error checking {region}: {e}")
+            send_telegram_message(f"❌ Bot error for {region}: {e}")
+
+    driver.quit()
 
 # ✅ Start
 keep_alive()
