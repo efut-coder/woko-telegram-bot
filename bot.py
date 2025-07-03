@@ -1,80 +1,100 @@
-import time
-import requests
-import os
-from bs4 import BeautifulSoup
+"""
+WOKO watcher – plain HTTP to Telegram
+─────────────────────────────────────
+Render service type : Web Service
+Start command       : gunicorn bot:app --bind 0.0.0.0:${PORT:-8080}
+"""
+
+import time, threading, requests
 from flask import Flask
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-# ───────────── Telegram (hard-coded – YOU supplied these) ─────────────
+# ── Telegram credentials (hard-coded at your request) ──────────
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = "194010292"
 
 def tg_send(text: str) -> None:
-    """Send a single HTML-formatted message to Telegram via HTTP POST."""
+    """Send an HTML-formatted Telegram message via plain HTTP POST."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-    requests.post(url, data=payload, timeout=10)
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as exc:
+        print("⚠️  Telegram send error:", exc)
 
-# ───────────── Selenium headless Chrome factory ─────────────
+# ── Selenium headless Chrome factory ───────────────────────────
 def make_driver():
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    return webdriver.Chrome(options=opts)
+    opt = Options()
+    opt.add_argument("--headless")
+    opt.add_argument("--no-sandbox")
+    opt.add_argument("--disable-dev-shm-usage")
+    return webdriver.Chrome(options=opt)
 
-# ───────────── Pages to watch (German interface) ─────────────
-URLS = {
-    "Zürich"                 : "https://www.woko.ch/de/zimmer-in-zuerich",
-    "Winterthur + Wädenswil" : "https://www.woko.ch/de/zimmer-in-winterthur-und-waedenswil",
-    "Wädenswil"              : "https://www.woko.ch/de/zimmer-in-waedenswil"
+# ── WOKO pages to watch ────────────────────────────────────────
+PAGES = {
+    "Zürich"                : "https://www.woko.ch/de/zimmer-in-zuerich",
+    "Winterthur + Wädenswil": "https://www.woko.ch/de/zimmer-in-winterthur-und-waedenswil",
+    "Wädenswil"             : "https://www.woko.ch/de/zimmer-in-waedenswil",
 }
 
-def scrape_once() -> None:
+sent_links: set[str] = set()        # duplicate filter
+
+def scan_once() -> None:
     drv = make_driver()
 
-    for city, url in URLS.items():
+    for city, url in PAGES.items():
         print(f"🔎  Checking {city}")
         try:
             drv.get(url)
-            time.sleep(4)           # give JS a moment
+            time.sleep(4)                   # allow JS to render
 
             soup = BeautifulSoup(drv.page_source, "html.parser")
-
-            # Works for both older <div class="offer"> and newer <div class="grid-item">
-            box = soup.select_one("div.offer, div.grid-item")
+            box  = soup.select_one("div.grid-item, div.offer")
             if not box:
-                tg_send(f"⚠️ No listings found on WOKO for {city}.")
+                print(f"⚠️  No listings on {city}")
+                tg_send(f"⚠️  No listings found on WOKO ({city}).")
                 continue
 
-            title_tag = box.find(["h3", "h2"])
             link_tag  = box.find("a", href=True)
+            title_tag = box.find(["h3", "h2"])
 
-            title = title_tag.get_text(strip=True) if title_tag else "Kein Titel"
-            link  = "https://www.woko.ch" + link_tag["href"] if link_tag else url
+            full_link = ("https://www.woko.ch" + link_tag["href"]) if link_tag else url
+            title     = title_tag.get_text(strip=True) if title_tag else "Kein Titel"
 
-            msg = f"🏠 <b>{title}</b>\n🔗 {link}\n📍 {city}"
+            if full_link in sent_links:
+                print("• already sent")
+                continue
+
+            sent_links.add(full_link)
+            msg = f"🏠 <b>{title}</b>\n🔗 {full_link}\n📍 {city}"
             tg_send(msg)
+            print("✅ sent")
 
         except Exception as e:
-            err = f"❌ Fehler bei {city}: {e}"
+            err = f"❌ Error on {city}: {e}"
             print(err)
             tg_send(err)
 
     drv.quit()
 
-# ─────────────  Flask “keep-alive” endpoint for Render ─────────────
-app = Flask(__name__)
-@app.route("/")
-def root(): return "✅ WOKO bot is running"
-
-# ─────────────  Main loop ─────────────
-if __name__ == "__main__":
-    print("🤖 Bot has started …")
-
-    scrape_once()          # run immediately
-
+def loop_forever():
     while True:
-        time.sleep(60)     # every minute
-        scrape_once()
+        scan_once()
+        time.sleep(60)          # every minute
+
+# ── Flask keep-alive app ───────────────────────────────────────
+app = Flask(__name__)
+
+@app.route("/")
+def root():
+    return "✅ WOKO bot is running"
+
+# ── Start background thread then hand control to gunicorn ─────
+def _starter():
+    t = threading.Thread(target=loop_forever, daemon=True)
+    t.start()
+    print("🤖 Bot loop started in background")
+
+_starter()       # fire it once at import-time so gunicorn sees it
