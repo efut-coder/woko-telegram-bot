@@ -7,17 +7,14 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-
-# === Keep-alive for Render ===
 from keep_alive import keep_alive
+
 keep_alive()
 
-# === Telegram credentials from environment ===
+# Чтение токенов из окружения
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-sent_links = set()
 
-# === Send message via Telegram ===
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -25,10 +22,11 @@ def send_telegram_message(message):
         "text": message,
         "parse_mode": "HTML"
     }
-    response = requests.post(url, data=payload)
-    return response.json()
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"Failed to send message: {e}")
 
-# === Check WOKO for new rooms ===
 def get_free_rooms():
     try:
         options = Options()
@@ -38,44 +36,30 @@ def get_free_rooms():
         driver = webdriver.Chrome(options=options)
 
         driver.get("https://www.woko.ch/en/zimmer-in-zuerich")
-        time.sleep(3)  # Wait for page load
+        time.sleep(5)  # Ждем, чтобы сайт подгрузил контент
 
-        # Accept cookies
+        # Принимаем cookies
         try:
             accept_button = driver.find_element(By.ID, "cookie-agree")
             accept_button.click()
-            time.sleep(1)
+            time.sleep(2)
         except:
-            pass  # If already accepted
+            pass  # Кнопки может не быть
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
         driver.quit()
 
-        listings = soup.select("div.content-container div.row.offer")
-        new_announcements = []
-
-        for listing in listings:
-            link_tag = listing.find("a", href=True)
-            title_tag = listing.find("h3")
-            if not link_tag or not title_tag:
-                continue
-
-            full_link = "https://www.woko.ch" + link_tag["href"]
-            title = title_tag.get_text(strip=True)
-
-            formatted = f"<b>{title}</b>\n<a href='{full_link}'>Open listing</a>"
-            new_announcements.append(formatted)
-            break  # Send only one latest for testing
-
-        return new_announcements
+        # Отладка: отправляем HTML
+        preview = soup.prettify()[:2000]
+        return [f"🔍 HTML Preview:\n<pre>{preview}</pre>"]
 
     except Exception as e:
         driver.quit()
         return [f"❗️Error: {str(e)}"]
 
-# === Run the bot ===
-print("🟢 Bot is running.")
+# Основной цикл
 while True:
+    print("🔁 Tick... checking WOKO again")
     new_rooms = get_free_rooms()
     for msg in new_rooms:
         send_telegram_message(msg)
