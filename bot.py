@@ -6,8 +6,8 @@ from selenium.webdriver.chrome.options import Options
 from telegram import Bot
 
 # Telegram
-TOKEN   = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")           # keep the SAME key name everywhere
+TOKEN   = os.getenv("7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8")
+CHAT_ID = os.getenv("194010292")           # keep the SAME key name everywhere
 tg      = Bot(TOKEN)
 
 # Flask (keeps Render happy)
