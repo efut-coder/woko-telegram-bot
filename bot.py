@@ -1,27 +1,31 @@
-# bot.py
-import os, time, logging, requests
+# bot.py  (python 3.8+)
+import os, time, logging, re, requests
 from datetime import datetime
 from threading import Thread
+from bs4 import BeautifulSoup          # requirements.txt → beautifulsoup4
 from flask import Flask
-from bs4 import BeautifulSoup     # <-- требует beautifulsoup4 в requirements
 
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292
 
-START_NACHMIETER  = 10198
-START_UNTERMIETER = 10189
-CHECK_EVERY_SEC   = 60
-MAX_GAP           = 50            # сколько подряд 404 считаем «концом» ленты
-DATE_LIMIT        = datetime(2025, 7, 2)
+MIN_NACH = 10198          # числа-стартеры
+MIN_UNTER = 10189
+MIN_DATE  = datetime(2025, 7, 2)        # 02 июля 2025  🚦
 
-NACH_URL  = "https://www.woko.ch/en/nachmieter-details/{}"
-UNTER_URL = "https://www.woko.ch/en/untermieter-details/{}"
+CHECK_EVERY_SEC = 60
+LANGS = ("en", "de")                    # теперь проверяем оба раздела
 
-SENT: set[str] = set()
+BASE = "https://www.woko.ch/{lang}/{kind}-details/{id}"
+KINDS = {
+    "nach": ("nachmieter",  MIN_NACH ),
+    "unter": ("untermieter", MIN_UNTER)
+}
+
+SENT = set()                            # что уже отправляли
 
 # ---------- helpers ----------
 def tg_send(url: str) -> None:
-    if url in SENT:
+    if url in SENT:           # не дублируем
         return
     r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
@@ -34,68 +38,64 @@ def tg_send(url: str) -> None:
     else:
         logging.warning("Telegram error %s → %s", r.status_code, r.text)
 
-def fetch(url: str) -> BeautifulSoup | None:
+def page_ok(url: str) -> tuple[bool, str]:
+    "HEAD-проверка + возвращает финальный URL (учёт редиректа)"
     try:
-        r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            return None
-        return BeautifulSoup(r.text, "html.parser")
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        return r.status_code == 200, r.url
+    except requests.RequestException:
+        return False, url
+
+DATE_RX = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})")   # 04.07.2025
+
+def recent_enough(url: str) -> bool:
+    "Скачивает страницу, вытаскивает первую дату в формате dd.MM.yyyy"
+    try:
+        html = requests.get(url, timeout=10).text
+        m = DATE_RX.search(html)
+        if not m:
+            logging.warning("no date %s", url);  return False
+        d = datetime(int(m[3]), int(m[2]), int(m[1]))
+        return d >= MIN_DATE
     except requests.RequestException as e:
         logging.warning("GET %s: %s", url, e)
-        return None
-
-def is_recent_enough(soup: BeautifulSoup) -> bool:
-    time_tag = soup.select_one("time")
-    if not time_tag or not time_tag.get("datetime"):
         return False
-    published = datetime.fromisoformat(time_tag["datetime"][:10])
-    return published >= DATE_LIMIT
 
-def try_send(url: str):
-    soup = fetch(url)
-    if soup and is_recent_enough(soup):
-        tg_send(url)
+def try_send(kind: str, id_: int) -> None:
+    slug, _ = KINDS[kind]
+    for lang in LANGS:
+        url = BASE.format(lang=lang, kind=slug, id=id_)
+        ok, final = page_ok(url)
+        if ok and recent_enough(final):
+            tg_send(final)
+            break                           # если нашли в одном языке – достаточно
 
 # ---------- watcher ----------
 def watcher() -> None:
-    nach_id  = START_NACHMIETER
-    unter_id = START_UNTERMIETER
+    # стартовые ссылки
+    for kind, (_, start) in KINDS.items():
+        try_send(kind, start)
 
-    # отправляем стартовые ссылки
-    try_send(NACH_URL.format(nach_id))
-    try_send(UNTER_URL.format(unter_id))
+    id_cur = {k: start for k, (_, start) in KINDS.items()}
 
     while True:
         time.sleep(CHECK_EVERY_SEC)
-
-        # —–– nachmieter –––
-        gap = 0
-        while gap < MAX_GAP:
-            if fetch(NACH_URL.format(nach_id + 1)):
-                nach_id += 1
-                gap = 0
-                try_send(NACH_URL.format(nach_id))
-            else:
-                gap += 1
-                nach_id += 1
-
-        # —–– untermieter –––
-        gap = 0
-        while gap < MAX_GAP:
-            if fetch(UNTER_URL.format(unter_id + 1)):
-                unter_id += 1
-                gap = 0
-                try_send(UNTER_URL.format(unter_id))
-            else:
-                gap += 1
-                unter_id += 1
+        for kind, (_, _) in KINDS.items():
+            nxt = id_cur[kind] + 1
+            while True:
+                try_send(kind, nxt)
+                if nxt in SENT:             # страница есть и прошла оба фильтра
+                    id_cur[kind] = nxt       # сдвигаем «текущий максимум»
+                    nxt += 1
+                else:                       # как только HEAD→404 – стоп цикла
+                    break
 
 # ---------- flask stub ----------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "WOKO-watcher is running"
+    return "WOKO-watcher running"
 
 # ---------- entry ----------
 if __name__ == "__main__":
