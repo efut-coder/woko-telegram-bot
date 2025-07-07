@@ -10,7 +10,7 @@ from flask import Flask
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292
 
-START_NACHMIETER  = 10198
+START_NACHMIETER  = 10207
 START_UNTERMIETER = 10189
 CHECK_EVERY_SEC   = 60                       # частота опроса
 MIN_DATE          = datetime(2025, 7, 6)     # 06-07-2025
