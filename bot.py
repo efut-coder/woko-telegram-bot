@@ -1,125 +1,125 @@
 # bot.py
-import os, time, logging, requests
+import os, time, logging, re, requests
 from datetime import datetime
 from threading import Thread
-from typing import Set, Optional
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup          # pip install beautifulsoup4
 from flask import Flask
 
-# ──────── настройка ────────
+# ──────────── настройки ────────────
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292
 
-START_NACHMIETER  = 10207
-START_UNTERMIETER = 10189
-CHECK_EVERY_SEC   = 60                       # частота опроса
-MIN_DATE          = datetime(2025, 7, 6)     # 06-07-2025
+START_NACHMIETER  = 10207          # последний увиденный Nachmieter-ID
+START_UNTERMIETER = 10189          # последний увиденный Untermieter-ID
+CHECK_EVERY_SEC   = 60             # частота опроса страниц (сек.)
+MIN_DATE          = datetime(2025, 7, 6)   # «свежесть» объявлений
 
+# Немецкие URL-ы ( /de/ ) — работают и для англ. версии.
 NACH_URL  = "https://www.woko.ch/de/nachmieter-details/{}"
 UNTER_URL = "https://www.woko.ch/de/untermieter-details/{}"
 
-# ──────── helpers ────────
-def tg_send(url: str, sent: Set[str]) -> None:
-    """Отправить ссылку в Telegram (один раз)."""
-    if url in sent:
+# ──────────── Telegram ────────────
+def tg_send(url: str) -> None:
+    if url in SENT:
         return
     r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
         json={"chat_id": CHAT_ID, "text": url},
-        timeout=10,
+        timeout=15,
     )
     if r.ok:
-        sent.add(url)
+        SENT.add(url)
         logging.info("sent %s", url)
     else:
-        logging.warning("TG error %s → %s", r.status_code, r.text)
+        logging.warning("telegram %s → %s", r.status_code, r.text)
 
-def page_date(html: str) -> Optional[datetime]:
-    """Вытащить дату из <time datetime="YYYY-MM-DD"> либо из текста вида 06.07.2025."""
+# ──────────── сеть ────────────
+def head_ok(url: str) -> bool:
+    """Проверяем, существует ли страница (HEAD)."""
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        return r.status_code == 200
+    except requests.RequestException as e:
+        logging.warning("HEAD %s → %s", url, e)
+        return False
+
+DATE_RX = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")   # 07.07.2025
+
+def parse_date(html: str) -> datetime | None:
+    """Выдёргиваем дату публикации из HTML."""
     soup = BeautifulSoup(html, "html.parser")
 
-    # вариант с тегом <time datetime="2025-07-06">
-    t = soup.find("time", attrs={"datetime": True})
-    if t and t["datetime"]:
+    # 1) meta property
+    meta = soup.find("meta", {"property": "article:published_time"})
+    if meta and meta.get("content"):
         try:
-            return datetime.strptime(t["datetime"][:10], "%Y-%m-%d")
+            return datetime.fromisoformat(meta["content"][:10])
         except ValueError:
             pass
 
-    # fallback: дата встречается как текст 06.07.2025
-    for txt in soup.stripped_strings:
-        if "." in txt and len(txt) == 10:
-            try:
-                return datetime.strptime(txt, "%d.%m.%Y")
-            except ValueError:
-                continue
-    return None            # ничего не нашли
+    # 2) первый текст «ДД.ММ.ГГГГ»
+    m = DATE_RX.search(soup.get_text(" ", strip=True))
+    if m:
+        d, m_, y = map(int, m.groups())
+        return datetime(y, m_, d)
 
-def is_recent_enough(url: str) -> bool:
-    """HEAD + GET: проверяем, существует ли страница и не старше ли она 06-07-25."""
-    try:
-        h = requests.head(url, allow_redirects=True, timeout=10)
-        if h.status_code != 200:
-            return False
-    except requests.RequestException:
-        return False
+    return None           # дату не нашли → считаем свежим
 
+# ──────────── логика отправки ────────────
+def try_send(url: str) -> None:
+    if url in SENT:
+        return
     try:
-        g = requests.get(url, timeout=10)
-        if g.status_code != 200:
-            return False
-        dt = page_date(g.text) or datetime.min
-        return dt >= MIN_DATE
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            return
+        pub_date = parse_date(r.text)
+        if pub_date and pub_date < MIN_DATE:
+            logging.info("skip %s (old %s)", url, pub_date.date())
+            return
     except requests.RequestException as e:
-        logging.warning("GET %s: %s", url, e)
-        return False
+        logging.warning("GET %s → %s", url, e)
+        return
 
-# ──────── watcher ────────
+    tg_send(url)
+
+# ──────────── основной watcher ────────────
 def watcher() -> None:
-    sent: Set[str] = set()
+    nach_id, unter_id = START_NACHMIETER, START_UNTERMIETER
 
-    nach_id  = START_NACHMIETER
-    unter_id = START_UNTERMIETER
-
-    # 1️⃣ шлём стартовые ссылки (дата не проверяется)
-    tg_send(NACH_URL.format(nach_id),  sent)
-    tg_send(UNTER_URL.format(unter_id), sent)
+    # стартовые ссылки
+    try_send(NACH_URL.format(nach_id))
+    try_send(UNTER_URL.format(unter_id))
 
     while True:
         time.sleep(CHECK_EVERY_SEC)
 
-        # nachmieter
-        while True:
-            nxt = nach_id + 1
-            url = NACH_URL.format(nxt)
-            if not is_recent_enough(url):
-                break
-            nach_id = nxt
-            tg_send(url, sent)
+        # Nachmieter
+        while head_ok(NACH_URL.format(nach_id + 1)):
+            nach_id += 1
+            try_send(NACH_URL.format(nach_id))
 
-        # untermieter
-        while True:
-            nxt = unter_id + 1
-            url = UNTER_URL.format(nxt)
-            if not is_recent_enough(url):
-                break
-            unter_id = nxt
-            tg_send(url, sent)
+        # Untermieter
+        while head_ok(UNTER_URL.format(unter_id + 1)):
+            unter_id += 1
+            try_send(UNTER_URL.format(unter_id))
 
-# ──────── Flask stub ────────
+# ──────────── Flask-заглушка для Render ────────────
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "WOKO-watcher running"
+    return "WOKO-watcher alive"
 
-# ──────── entry ────────
+# ──────────── точка входа ────────────
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    logging.info("Starting watcher…")
+    SENT: set[str] = set()
+
+    logging.info("watcher start…")
     Thread(target=watcher, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
