@@ -1,129 +1,120 @@
 #!/usr/bin/env python3
-# bot.py
+# -*- coding: utf-8 -*-
 
-import json
-import logging
+"""
+WOKO watcher  – “внешний” парсинг списка объявлений
+(1) загружает страницу /zimmer-in-zuerich
+(2) ищет все <div class="inserat"> -> <a href="…">
+(3) если ссылки нет в viewed.json – шлёт её в Telegram
+"""
+
 import os
+import json
 import time
-from pathlib import Path
-from threading import Thread
+import logging
+from typing import List, Set
 
 import requests
-from flask import Flask
+from bs4 import BeautifulSoup
 
-# ---------- настройки ----------
+
+# ---------- НАСТРОЙКИ --------------------------------------------------------
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292
 
-CHECK_EVERY_SEC = 60          # как часто пробовать +1
+LIST_URL = "https://woko.ch/de/zimmer-in-zuerich"   # нем. версия; можно заменить на /en/
+CHECK_EVERY_SEC = 60
 
-START_ZH_ID   = 10203         # /zimmer-in-zuerich-details/
-START_UNTER_ID = 10203        # /untermieter-details/
-START_NACH_ID  = 10210        # /nachmieter-details/
+VIEWED_FILE = "viewed.json"           # локальное хранилище уже отправленных href
 
-ZH_URL   = "https://www.woko.ch/de/zimmer-in-zuerich-details/{}"
-UNTER_URL = "https://www.woko.ch/de/untermieter-details/{}"
-NACH_URL  = "https://www.woko.ch/de/nachmieter-details/{}"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; WOKO-watcher/1.0; "
+        "+https://github.com/efut-coder/woko-telegram-bot)"
+    )
+}
 
-SENT_FILE = Path("sent.json")   # здесь храним уже отосланные ссылки
-SENT: set[str] = set()
 
-# ---------- утилиты ----------
-def load_sent() -> None:
-    if SENT_FILE.exists():
-        try:
-            SENT.update(json.loads(SENT_FILE.read_text()))
-        except Exception:
-            logging.warning("Не смог прочитать %s, начинаю с пустого списка", SENT_FILE)
-
-def save_sent() -> None:
-    try:
-        SENT_FILE.write_text(json.dumps(list(SENT), indent=2))
-    except Exception as e:
-        logging.warning("Не смог сохранить %s: %s", SENT_FILE, e)
-
-def norm_url(url: str) -> str:
-    """канонизируем для set() – регистр и завершающий слэш не важны"""
-    return url.lower().rstrip('/')
-
-def tg_send(url: str) -> None:
-    u = norm_url(url)
-    if u in SENT:
-        return          # уже отправляли
-
-    ok = False
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": url},
-            timeout=15,
-        )
-        ok = r.ok
-    except requests.RequestException as e:
-        logging.warning("Telegram error: %s", e)
-
-    if ok:
-        SENT.add(u)
-        save_sent()
-        logging.info("sent %s", url)
+# ---------- Telegram ---------------------------------------------------------
+def tg_send(text: str) -> None:
+    """Отправить сообщение в Telegram"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    r = requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    if not r.ok:
+        logging.warning("Telegram error %s → %s", r.status_code, r.text)
     else:
-        logging.warning("Не удалось отправить %s", url)
+        logging.info("sent %s", text)
 
-def url_exists(url: str) -> bool:
-    try:
-        r = requests.head(url, allow_redirects=True, timeout=10)
-        return r.status_code == 200
-    except requests.RequestException:
-        return False
 
-# ---------- основной цикл ----------
-def watcher() -> None:
-    logging.info("watcher start…")
-    # загрузили историю
-    load_sent()
+# ---------- парсер списка ----------------------------------------------------
+def fetch_listing() -> List[str]:
+    """Вернуть список href (относительных) из блока inserat"""
+    r = requests.get(LIST_URL, headers=HEADERS, timeout=15)
+    r.raise_for_status()
 
-    # текущие max-ID
-    zh_id, unter_id, nach_id = START_ZH_ID, START_UNTER_ID, START_NACH_ID
+    soup = BeautifulSoup(r.text, "html.parser")
+    links: List[str] = []
 
-    # шлём стартовые ссылки (они запишутся в SENT и больше не повторятся)
-    tg_send(ZH_URL.format(zh_id))
-    tg_send(UNTER_URL.format(unter_id))
-    tg_send(NACH_URL.format(nach_id))
+    for div in soup.find_all("div", class_="inserat"):
+        a = div.find("a", href=True)
+        if not a:
+            continue
+        links.append(a["href"])  # '/de/zimmer-in-zuerich-details/10210' и т.д.
 
-    while True:
-        time.sleep(CHECK_EVERY_SEC)
+    return links
 
-        # zimmer-in-zuerich
-        while url_exists(ZH_URL.format(zh_id + 1)):
-            zh_id += 1
-            tg_send(ZH_URL.format(zh_id))
 
-        # untermieter
-        while url_exists(UNTER_URL.format(unter_id + 1)):
-            unter_id += 1
-            tg_send(UNTER_URL.format(unter_id))
+# ---------- основная петля ---------------------------------------------------
+def load_viewed() -> Set[str]:
+    if os.path.exists(VIEWED_FILE):
+        with open(VIEWED_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
 
-        # nachmieter
-        while url_exists(NACH_URL.format(nach_id + 1)):
-            nach_id += 1
-            tg_send(NACH_URL.format(nach_id))
 
-# ---------- Flask заглушка для Render ----------
-app = Flask(__name__)
+def save_viewed(viewed: Set[str]) -> None:
+    with open(VIEWED_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(viewed), f, indent=2)
 
-@app.route("/")
-def home():
-    return "WOKO watcher up & running"
 
-# ---------- entrypoint ----------
-if __name__ == "__main__":
+def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
+        format="%(H:%M:%S)s %(levelname)s %(message)s",  # только время
     )
 
-    Thread(target=watcher, daemon=True).start()
-    # Render передаёт порт через переменную окружения PORT
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    viewed = load_viewed()
+    logging.info("watcher started, already have %d links", len(viewed))
+
+    # --- отправляем стартовый список (внешний парсер сразу всё увидит) -------
+    try:
+        for href in fetch_listing():
+            abs_url = f"https://woko.ch{href}"
+            if href not in viewed:
+                tg_send(abs_url)
+                viewed.add(href)
+        save_viewed(viewed)
+        logging.info("initial dump sent (%d links)", len(viewed))
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("initial fetch failed: %s", exc)
+
+    # --- основной цикл -------------------------------------------------------
+    while True:
+        time.sleep(CHECK_EVERY_SEC)
+        try:
+            for href in fetch_listing():
+                if href in viewed:
+                    continue
+                abs_url = f"https://woko.ch{href}"
+                tg_send(abs_url)
+                viewed.add(href)
+
+            save_viewed(viewed)
+
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("fetch failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    main()
