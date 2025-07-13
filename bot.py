@@ -23,7 +23,7 @@ TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292
 
 LIST_URL        = "https://woko.ch/de/zimmer-in-zuerich"
-CHECK_EVERY_SEC = 60
+CHECK_EVERY_SEC = 30
 VIEWED_FILE     = "viewed.json"
 
 HEADERS = {
