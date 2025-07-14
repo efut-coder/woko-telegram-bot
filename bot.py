@@ -17,10 +17,10 @@ import requests
 from flask import Flask
 from bs4 import BeautifulSoup
 
-
 # --------------------- НАСТРОЙКИ --------------------------------------------
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
-CHAT_ID = 194010292
+CHAT_ID = 194010292              # Your personal Telegram ID
+FAMILY_GROUP_ID = -1004843343749 # Your Family group chat ID ✅
 
 LIST_URL        = "https://woko.ch/de/zimmer-in-zuerich"
 CHECK_EVERY_SEC = 30
@@ -31,14 +31,13 @@ HEADERS = {
 }
 
 # --------------------- Telegram ---------------------------------------------
-def tg_send(text: str) -> None:
+def tg_send(text: str, chat_id: int = CHAT_ID) -> None:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    r = requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     if r.ok:
-        logging.info("sent %s", text)
+        logging.info("sent to %s: %s", chat_id, text)
     else:
         logging.warning("Telegram error %s → %s", r.status_code, r.text)
-
 
 # --------------------- парсер страницы --------------------------------------
 def fetch_listing() -> List[str]:
@@ -55,7 +54,6 @@ def fetch_listing() -> List[str]:
 
     return links
 
-
 # --------------------- utils -------------------------------------------------
 def load_viewed() -> Set[str]:
     if os.path.exists(VIEWED_FILE):
@@ -63,16 +61,25 @@ def load_viewed() -> Set[str]:
             return set(json.load(f))
     return set()
 
-
 def save_viewed(viewed: Set[str]) -> None:
     with open(VIEWED_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(viewed), f, indent=2)
-
 
 # --------------------- watcher thread ---------------------------------------
 def watcher() -> None:
     viewed = load_viewed()
     logging.info("watcher start… cached %d links", len(viewed))
+
+    # --- Send the newest listing once for testing ---
+    try:
+        latest = fetch_listing()[0]  # most recent listing
+        abs_url = f"https://woko.ch{latest}"
+        tg_send(abs_url)                               # send to you
+        tg_send(abs_url, chat_id=FAMILY_GROUP_ID)      # send to family group ✅
+        viewed.add(latest)
+    except Exception:
+        logging.exception("initial test send failed")
+    # ------------------------------------------------
 
     while True:
         try:
@@ -81,7 +88,8 @@ def watcher() -> None:
                 if href in viewed:
                     continue
                 abs_url = f"https://woko.ch{href}"
-                tg_send(abs_url)
+                tg_send(abs_url)                               # send to you
+                tg_send(abs_url, chat_id=FAMILY_GROUP_ID)      # send to family group ✅
                 viewed.add(href)
 
             save_viewed(viewed)
@@ -91,7 +99,6 @@ def watcher() -> None:
 
         time.sleep(CHECK_EVERY_SEC)
 
-
 # --------------------- Flask stub for Render --------------------------------
 app = Flask(__name__)
 
@@ -99,7 +106,7 @@ app = Flask(__name__)
 def home():
     return "WOKO-watcher alive"
 
-# --------------------- entry -------------------------------------------------
+# --------------------- entry ------------------------------------------------
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
