@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 # --------------------- НАСТРОЙКИ --------------------------------------------
 TOKEN   = "7373000536:AAFCC_aocZE_mOegofnj63DyMtjQxkYvaN8"
 CHAT_ID = 194010292              # Your personal Telegram ID
-FAMILY_GROUP_ID = -1004843343749 # Your Family group chat ID ✅
+FAMILY_GROUP_ID = -1002642496821 # Your Family group chat ID ✅
 
 LIST_URL        = "https://woko.ch/de/zimmer-in-zuerich"
 CHECK_EVERY_SEC = 30
