@@ -115,6 +115,13 @@ if __name__ == "__main__":
     )
 
     threading.Thread(target=watcher, daemon=True).start()
+# Force a test message to both chats at startup
+try:
+    test_text = "✅ TEST: WOKO bot is active and can send messages."
+    tg_send(test_text)                               # send to personal chat
+    tg_send(test_text, chat_id=FAMILY_GROUP_ID)      # send to family group
+except Exception as e:
+    logging.exception("❌ Test message failed: %s", e)
 
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
